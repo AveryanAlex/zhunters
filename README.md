@@ -1,4 +1,4 @@
-# zhunters
+# ZHunters
 
 `zhunters` is a Rust port of the Z-HUNT 3 Z-DNA scanner. It provides the `zhunt` command-line tool for scanning DNA sequences and writing legacy-compatible `.Z-SCORE` output files.
 
@@ -9,6 +9,16 @@ https://github.com/Ho-Lab-Colostate/zhunt
 It also incorporates correctness and optimization ideas from Carlos Bederián's Fast Z-Hunt implementation:
 
 https://github.com/zzzoom/fast-zhunt
+
+## Changes from the original Z-HUNT
+
+The command-line interface, input handling, and `.Z-SCORE` output format are kept compatible with the original scanner, but this port includes a few correctness and usability updates:
+
+- **Physical constants:** `RT` is computed from the CODATA molar gas constant using the `dimensional_quantity` crate and an explicit 25 °C temperature (`298.15 K`). This replaces the older rounded `298 K`/hand-written constant calculation while keeping the Z-HUNT energy model and DBZED table intact.
+- **Anti/syn scoring fix:** anti/syn path selection uses exact integer centi-kcal energy sums instead of accumulating recursive `float` additions/subtractions. This avoids the numerical drift described in Ho-Lab-Colostate/zhunt issue [#9](https://github.com/Ho-Lab-Colostate/zhunt/issues/9).
+- **Slope fix:** the reported slope is computed from the log coefficients for the actual best dinucleotide length, not whatever length happened to run last. This fixes the wrong-`logcoef` bug described in Ho-Lab-Colostate/zhunt issue [#10](https://github.com/Ho-Lab-Colostate/zhunt/issues/10).
+- **Progress reporting:** long scans show a progress bar while positions are scored and streamed to disk.
+- **Rayon multithreading:** scoring is parallelized with Rayon work stealing. Results are streamed as ordered score blocks so the writer can consume completed work without waiting for a whole large compute chunk. By default, systems with 8 or more logical CPUs reserve one CPU for writing/progress work and use `cores - 1` scoring workers; smaller systems use all available CPUs. `--threads` overrides this default.
 
 ## Installation
 
@@ -54,9 +64,11 @@ input.fa.Z-SCORE
 - `minsize`: minimum region size in dinucleotides
 - `maxsize`: maximum region size in dinucleotides
 - `datafile`: input DNA file
-- `--threads <threads>`: optional number of scoring threads; defaults to available parallelism
+- `--threads <threads>`: optional number of Rayon scoring workers; defaults to available parallelism, except systems with 8 or more logical CPUs default to `cores - 1` to leave room for writing/progress work
 
 Input parsing follows the legacy behavior: the scanner reads all `A/T/G/C/N` bases from the file and ignores other bytes.
+
+Note: the current physical-constant implementation uses `dimensional_quantity`, which requires nightly Rust.
 
 ## Development
 
@@ -67,12 +79,6 @@ cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test --lib
 cargo test --test cli
-```
-
-Generate a release build:
-
-```bash
-cargo build --release --bin zhunt
 ```
 
 ## Profiling
