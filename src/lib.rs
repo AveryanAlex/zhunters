@@ -197,12 +197,12 @@ mod tests {
         let anti = best_anti_syn(&bzindex, &config.exp_dbzed);
         let delta = find_delta_linking(&anti.bzenergy, &config.bztwist[..12], (A / 2.0) * 12.0);
         assert_eq!(format!("{}", anti.antisyn), "ASASASASASASASASASASSASA");
-        assert_eq!(delta.delta_linking, 37.2418212890625);
+        assert_eq!(delta.delta_linking, 37.1014404296875);
 
         let record = score_position(&config, &sequence, 0, 8, 12);
         assert_eq!(
             format!("{record}\n"),
-            "1 17 16  34.276   5.830 4.463985e-02 tacattaatcatagcg   ASASASASASASASAS\n"
+            "1 17 16  34.147   5.873 4.925847e-02 tacattaatcatagcg   ASASASASASASASAS\n"
         );
     }
 

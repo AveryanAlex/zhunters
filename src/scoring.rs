@@ -1,5 +1,5 @@
 use crate::config::ZhuntConfig;
-use crate::constants::{A, EXP_LIMIT, INT_DBZED, K_RT, PI_DEGREES, SIGMA};
+use crate::constants::{A, EXP_LIMIT, INT_DBZED, K_RT, SIGMA};
 use crate::record::{AntiSynPath, ZScoreOutput, ZScoreRecord};
 use crate::sequence::CircularSequence;
 use crate::ZhuntError;
@@ -182,6 +182,8 @@ fn score_position_with_scratch<'a>(
     to_dinucleotide: usize,
     scratch: &mut ScoringScratch,
 ) -> ZScoreRecord<'a> {
+    const PI_DEGREES: f64 = 180.0 / std::f64::consts::PI;
+
     let nucleotides = 2 * to_dinucleotide;
     let window = sequence.window(position, nucleotides);
     assign_bzenergy_indices_into(window.as_ref(), to_dinucleotide, &mut scratch.bzindex);

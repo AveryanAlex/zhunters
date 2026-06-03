@@ -6,6 +6,10 @@ This project is based on the original Z-HUNT implementation by Ho Lab, Colorado 
 
 https://github.com/Ho-Lab-Colostate/zhunt
 
+It also incorporates correctness and optimization ideas from Carlos Bederián's Fast Z-Hunt implementation:
+
+https://github.com/zzzoom/fast-zhunt
+
 ## Installation
 
 Install Rust, then build the release binary:

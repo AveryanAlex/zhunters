@@ -1,10 +1,14 @@
-pub(crate) const RT: f64 = 0.59004; // 0.00198 * 298
-pub(crate) const A: f64 = 0.357; // 2 * (1/10.5 + 1/12)
+const TEMPERATURE_KELVIN: f64 = 298.0;
+const JOULES_PER_KILOCALORIE: f64 = 4_184.0;
+
+/// RT in kcal/mol at the legacy Z-HUNT temperature.
+pub(crate) const RT: f64 =
+    physical_constants::MOLAR_GAS_CONSTANT * TEMPERATURE_KELVIN / JOULES_PER_KILOCALORIE;
+pub(crate) const A: f64 = 2. * (1. / 10.5 + 1. / 12.);
 pub(crate) const B: f64 = 0.4;
-pub(crate) const K_RT: f64 = -0.252_120_1; // -1100/4363
-pub(crate) const SIGMA: f64 = 16.948_003_53; // 10/RT
+pub(crate) const K_RT: f64 = -1100. / 4363.;
+pub(crate) const SIGMA: f64 = 10. / RT;
 pub(crate) const EXP_LIMIT: f64 = -600.0;
-pub(crate) const PI_DEGREES: f64 = 57.295_779_51; // 180/pi
 pub(crate) const STREAM_CHUNK_POSITIONS: usize = 256 * 1024;
 
 /// Delta BZ Energy of dinucleotide, indexed by anti/syn transition row and
