@@ -98,7 +98,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn print_run_summary(cli: &Cli, output_path: &std::path::Path) {
-    println!("Z-HUNT 3 scanner");
+    println!("ZHunters scanner");
     println!("────────────────");
     println!("Input      : {}", cli.datafile);
     println!("Output     : {}", output_path.display());
