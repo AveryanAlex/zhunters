@@ -52,6 +52,18 @@ The binary will be available at:
 target/release/zhunt
 ```
 
+### Jupyter/Colab
+
+In a Jupyter or Google Colab notebook, run the following commands in a cell to install Rust, build `zhunt`, and make it available on `PATH`:
+
+```bash
+!curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+!rm -rf /tmp/zhunters && GIT_LFS_SKIP_SMUDGE=1 git clone --depth 1 https://github.com/AveryanAlex/zhunters.git /tmp/zhunters
+!cd /tmp/zhunters && PATH="$PATH:/root/.cargo/bin" cargo build --release && cd -
+!cp /tmp/zhunters/target/release/zhunt /usr/local/bin/zhunt && rm -rf /tmp/zhunters
+!zhunt --help
+```
+
 ## Usage
 
 ```bash
