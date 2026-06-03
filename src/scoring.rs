@@ -10,6 +10,15 @@ use std::io;
 const PROGRESS_BATCH_SIZE: usize = 1_000;
 pub(crate) const SCORE_WORK_BLOCK_POSITIONS: usize = 8_192;
 
+const DELTA_LINKING_MIN: f64 = 10.0;
+const DELTA_LINKING_MAX: f64 = 50.0;
+const DELTA_LINKING_TOLERANCE: f64 = 0.001;
+const DELTA_LINKING_GRID_STEPS: usize = 65_536;
+const DELTA_LINKING_GRID_STEP: f64 =
+    (DELTA_LINKING_MAX - DELTA_LINKING_MIN) / DELTA_LINKING_GRID_STEPS as f64;
+const DELTA_LINKING_NEWTON_STEPS: usize = 6;
+const DELTA_LINKING_GRID_ADJUST_LIMIT: usize = 8;
+
 pub fn calculate_zscore<'a>(
     config: &ZhuntConfig,
     min_size: usize,
@@ -574,9 +583,12 @@ fn find_delta_linking_candidate_with_bound(
         }
     }
 
-    Some(linear_search(10.0, 50.0, 0.001, |dl| {
-        delta_linking_equation_into(dl, logcoef, bztwist, delta_twist, exponents)
-    }))
+    Some(delta_linking_search(
+        logcoef,
+        bztwist,
+        delta_twist,
+        exponents,
+    ))
 }
 
 fn delta_linking_logcoef_into(
@@ -635,6 +647,137 @@ pub(crate) fn linear_search(
     }
 }
 
+fn delta_linking_search(
+    logcoef: &[f64],
+    bztwist: &[f64],
+    delta_twist: f64,
+    exponents: &mut Vec<f64>,
+) -> f64 {
+    let f_min =
+        delta_linking_equation_into(DELTA_LINKING_MIN, logcoef, bztwist, delta_twist, exponents);
+    let f_max =
+        delta_linking_equation_into(DELTA_LINKING_MAX, logcoef, bztwist, delta_twist, exponents);
+    if f_min * f_max >= 0.0 {
+        return DELTA_LINKING_MAX;
+    }
+
+    // The Z-HUNT delta-linking equation is monotone decreasing for the normal
+    // search interval. Use Newton steps only as a root predictor, then verify
+    // the final legacy bisection-grid point with the original equation so the
+    // returned delta-linking value stays bit-for-bit compatible with bisection.
+    if f_min > 0.0 && f_max < 0.0 {
+        let root_estimate =
+            approximate_delta_linking_root(f_min, f_max, logcoef, bztwist, delta_twist, exponents);
+        if let Some(delta_linking) = snap_delta_linking_to_legacy_grid(
+            root_estimate,
+            logcoef,
+            bztwist,
+            delta_twist,
+            exponents,
+        ) {
+            return delta_linking;
+        }
+    }
+
+    linear_search(
+        DELTA_LINKING_MIN,
+        DELTA_LINKING_MAX,
+        DELTA_LINKING_TOLERANCE,
+        |dl| delta_linking_equation_into(dl, logcoef, bztwist, delta_twist, exponents),
+    )
+}
+
+fn approximate_delta_linking_root(
+    f_min: f64,
+    f_max: f64,
+    logcoef: &[f64],
+    bztwist: &[f64],
+    delta_twist: f64,
+    exponents: &mut Vec<f64>,
+) -> f64 {
+    let mut lower = DELTA_LINKING_MIN;
+    let mut upper = DELTA_LINKING_MAX;
+    let mut x = lower + (upper - lower) * f_min / (f_min - f_max);
+    if !x.is_finite() || x <= lower || x >= upper {
+        x = (lower + upper) * 0.5;
+    }
+
+    for _ in 0..DELTA_LINKING_NEWTON_STEPS {
+        let (value, derivative) =
+            delta_linking_equation_and_derivative_into(x, logcoef, bztwist, delta_twist, exponents);
+        if value <= 0.0 {
+            upper = x;
+        } else {
+            lower = x;
+        }
+        if upper - lower <= DELTA_LINKING_GRID_STEP {
+            return (lower + upper) * 0.5;
+        }
+
+        let newton = x - value / derivative;
+        x = if derivative.is_finite()
+            && derivative < 0.0
+            && newton.is_finite()
+            && newton > lower
+            && newton < upper
+        {
+            newton
+        } else {
+            (lower + upper) * 0.5
+        };
+    }
+
+    x
+}
+
+fn snap_delta_linking_to_legacy_grid(
+    root_estimate: f64,
+    logcoef: &[f64],
+    bztwist: &[f64],
+    delta_twist: f64,
+    exponents: &mut Vec<f64>,
+) -> Option<f64> {
+    if !root_estimate.is_finite() {
+        return None;
+    }
+
+    let mut index = ((root_estimate - DELTA_LINKING_MIN) / DELTA_LINKING_GRID_STEP).ceil() as isize;
+    index = index.clamp(0, DELTA_LINKING_GRID_STEPS as isize);
+
+    for _ in 0..=DELTA_LINKING_GRID_ADJUST_LIMIT {
+        let delta_linking = delta_linking_grid_value(index as usize);
+        let value =
+            delta_linking_equation_into(delta_linking, logcoef, bztwist, delta_twist, exponents);
+        if value > 0.0 {
+            if index == DELTA_LINKING_GRID_STEPS as isize {
+                return None;
+            }
+            index += 1;
+            continue;
+        }
+
+        if index == 0 {
+            return Some(delta_linking);
+        }
+
+        let previous = delta_linking_grid_value(index as usize - 1);
+        let previous_value =
+            delta_linking_equation_into(previous, logcoef, bztwist, delta_twist, exponents);
+        if previous_value <= 0.0 {
+            index -= 1;
+            continue;
+        }
+
+        return Some(delta_linking);
+    }
+
+    None
+}
+
+fn delta_linking_grid_value(index: usize) -> f64 {
+    DELTA_LINKING_MIN + DELTA_LINKING_GRID_STEP * index as f64
+}
+
 fn delta_linking_equation_into(
     dl: f64,
     logcoef: &[f64],
@@ -665,6 +808,42 @@ fn delta_linking_equation_into(
     sumq += (K_RT * dl * dl + SIGMA + expmini).exp();
 
     delta_twist - sump / sumq
+}
+
+fn delta_linking_equation_and_derivative_into(
+    dl: f64,
+    logcoef: &[f64],
+    bztwist: &[f64],
+    delta_twist: f64,
+    exponents: &mut Vec<f64>,
+) -> (f64, f64) {
+    exponents.clear();
+    exponents.extend(
+        logcoef
+            .iter()
+            .zip(bztwist.iter())
+            .map(|(logcoef, bztwist)| {
+                let z = dl - bztwist;
+                logcoef + K_RT * z * z
+            }),
+    );
+
+    let expmini = exponent_offset(exponents);
+    let mut sump = 0.0;
+    let mut sumq = 0.0;
+    let mut sum_twist_squared = 0.0;
+
+    for (exponent, twist) in exponents.iter().zip(bztwist.iter()) {
+        let weight = (exponent + expmini).exp();
+        sumq += weight;
+        sump += twist * weight;
+        sum_twist_squared += twist * twist * weight;
+    }
+    sumq += (K_RT * dl * dl + SIGMA + expmini).exp();
+
+    let mean = sump / sumq;
+    let variance = (sum_twist_squared / sumq - mean * mean).max(0.0);
+    (delta_twist - mean, 2.0 * K_RT * variance)
 }
 
 fn delta_linking_slope_into(
