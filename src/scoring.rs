@@ -5,7 +5,6 @@ use crate::sequence::CircularSequence;
 use crate::ZhuntError;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
-use rustc_hash::{FxBuildHasher, FxHashMap};
 use std::io;
 
 const PROGRESS_BATCH_SIZE: usize = 1_000;
@@ -296,9 +295,6 @@ struct ScoringScratch {
     bzindex: Vec<usize>,
     prefixes: Vec<PathState>,
     bzenergy: Vec<f64>,
-    states: [Vec<PathState>; 2],
-    next: [Vec<PathState>; 2],
-    seen: [FxHashMap<i64, usize>; 2],
     products: Vec<f64>,
     logcoef: Vec<f64>,
     exponents: Vec<f64>,
@@ -306,24 +302,10 @@ struct ScoringScratch {
 
 impl ScoringScratch {
     fn new(max_dinucleotides: usize) -> Self {
-        let max_frontier_capacity = anti_syn_frontier_capacity(max_dinucleotides);
-        let max_hash_capacity = max_frontier_capacity.saturating_mul(2);
         Self {
             bzindex: Vec::with_capacity(max_dinucleotides),
             prefixes: Vec::with_capacity(max_dinucleotides),
             bzenergy: Vec::with_capacity(max_dinucleotides),
-            states: [
-                Vec::with_capacity(max_frontier_capacity),
-                Vec::with_capacity(max_frontier_capacity),
-            ],
-            next: [
-                Vec::with_capacity(max_frontier_capacity),
-                Vec::with_capacity(max_frontier_capacity),
-            ],
-            seen: [
-                FxHashMap::with_capacity_and_hasher(max_hash_capacity, FxBuildHasher),
-                FxHashMap::with_capacity_and_hasher(max_hash_capacity, FxBuildHasher),
-            ],
             products: Vec::with_capacity(max_dinucleotides),
             logcoef: Vec::with_capacity(max_dinucleotides),
             exponents: Vec::with_capacity(max_dinucleotides),
@@ -435,77 +417,45 @@ fn best_anti_syn_prefix_paths_into(max_dinucleotides: usize, scratch: &mut Scori
     );
 
     let first_index = bzindex[0];
-    let first_as_esum = INT_DBZED[0][first_index];
-    let first_sa_esum = INT_DBZED[1][first_index];
-    for state in 0..=1 {
-        scratch.states[state].clear();
-        scratch.next[state].clear();
-        scratch.seen[state].clear();
-    }
     scratch.prefixes.clear();
 
-    scratch.states[0].push(PathState {
-        esum: first_as_esum,
+    let mut best_as = PathState {
+        esum: INT_DBZED[0][first_index],
         mask: 0,
         len: 1,
-    });
-    scratch.states[1].push(PathState {
-        esum: first_sa_esum,
+    };
+    let mut best_sa = PathState {
+        esum: INT_DBZED[1][first_index],
         mask: 1,
         len: 1,
-    });
-    scratch
-        .prefixes
-        .push(best_path_from_states(&scratch.states));
+    };
+    scratch.prefixes.push(best_path(best_as, best_sa));
 
+    // Anti/syn energy is first-order Markov: once the current terminal state is
+    // fixed, only that state and the accumulated energy can affect all future
+    // transitions. Keep the best prefix ending in AS and the best prefix ending
+    // in SA instead of carrying every distinct energy frontier.
     for &dinucleotide_index in &bzindex[1..max_dinucleotides] {
-        for state in 0..=1 {
-            scratch.next[state].clear();
-            scratch.seen[state].clear();
-        }
+        let next_as = best_path(
+            best_as.push_with_esum(0, best_as.esum + INT_DBZED[0][dinucleotide_index]),
+            best_sa.push_with_esum(0, best_sa.esum + INT_DBZED[3][dinucleotide_index]),
+        );
+        let next_sa = best_path(
+            best_as.push_with_esum(1, best_as.esum + INT_DBZED[2][dinucleotide_index]),
+            best_sa.push_with_esum(1, best_sa.esum + INT_DBZED[1][dinucleotide_index]),
+        );
 
-        for (previous_state, paths) in scratch.states.iter().enumerate() {
-            for path in paths {
-                let as_row = transition_row(previous_state as u8, 0);
-                let as_energy = INT_DBZED[as_row][dinucleotide_index];
-                let as_esum = path.esum + as_energy;
-                insert_distinct_energy_path(
-                    &mut scratch.next[0],
-                    &mut scratch.seen[0],
-                    path.push_with_esum(0, as_esum),
-                );
-
-                let sa_row = transition_row(previous_state as u8, 1);
-                let sa_esum = path.esum + INT_DBZED[sa_row][dinucleotide_index];
-                insert_distinct_energy_path(
-                    &mut scratch.next[1],
-                    &mut scratch.seen[1],
-                    path.push_with_esum(1, sa_esum),
-                );
-            }
-        }
-
-        std::mem::swap(&mut scratch.states, &mut scratch.next);
-        scratch
-            .prefixes
-            .push(best_path_from_states(&scratch.states));
+        best_as = next_as;
+        best_sa = next_sa;
+        scratch.prefixes.push(best_path(best_as, best_sa));
     }
 }
 
-fn best_path_from_states(states: &[Vec<PathState>; 2]) -> PathState {
-    states
-        .iter()
-        .flatten()
-        .copied()
-        .min_by(path_order)
-        .expect("at least one anti/syn path is reachable")
-}
-
-fn anti_syn_frontier_capacity(max_dinucleotides: usize) -> usize {
-    if max_dinucleotides >= usize::BITS as usize - 1 {
-        usize::MAX / 4
+fn best_path(left: PathState, right: PathState) -> PathState {
+    if path_order(&left, &right).is_le() {
+        left
     } else {
-        (1_usize << max_dinucleotides).max(2)
+        right
     }
 }
 
@@ -529,21 +479,6 @@ fn materialize_bzenergy(
         let row = previous_state.map_or(state as usize, |previous| transition_row(previous, state));
         bzenergy.push(exp_dbzed[row][bzindex[position]]);
         previous_state = Some(state);
-    }
-}
-
-fn insert_distinct_energy_path(
-    paths: &mut Vec<PathState>,
-    seen: &mut FxHashMap<i64, usize>,
-    candidate: PathState,
-) {
-    if let Some(&index) = seen.get(&candidate.esum) {
-        if candidate.mask < paths[index].mask {
-            paths[index] = candidate;
-        }
-    } else {
-        seen.insert(candidate.esum, paths.len());
-        paths.push(candidate);
     }
 }
 
