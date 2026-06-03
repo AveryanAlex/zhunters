@@ -219,7 +219,8 @@ fn score_position_with_scratch<'a>(
             &mut scratch.bzenergy,
         );
         let delta_twist = (A / 2.0) * dinucleotides as f64;
-        let delta_linking = {
+        let best_delta_linking = best.as_ref().map(|(_, delta_linking, _)| *delta_linking);
+        let Some(delta_linking) = ({
             let ScoringScratch {
                 bzenergy,
                 products,
@@ -227,14 +228,17 @@ fn score_position_with_scratch<'a>(
                 exponents,
                 ..
             } = scratch;
-            find_delta_linking_with_buffers(
+            find_delta_linking_candidate_with_bound(
                 bzenergy,
                 &config.bztwist[..dinucleotides],
                 delta_twist,
+                best_delta_linking,
                 products,
                 logcoef,
                 exponents,
             )
+        }) else {
+            continue;
         };
 
         let replace_best = match best.as_ref() {
@@ -529,6 +533,7 @@ pub(crate) fn find_delta_linking(
     }
 }
 
+#[cfg(test)]
 fn find_delta_linking_with_buffers(
     best_bzenergy: &[f64],
     bztwist: &[f64],
@@ -537,11 +542,41 @@ fn find_delta_linking_with_buffers(
     logcoef: &mut Vec<f64>,
     exponents: &mut Vec<f64>,
 ) -> f64 {
+    find_delta_linking_candidate_with_bound(
+        best_bzenergy,
+        bztwist,
+        delta_twist,
+        None,
+        products,
+        logcoef,
+        exponents,
+    )
+    .expect("unbounded delta-linking search always returns a candidate")
+}
+
+fn find_delta_linking_candidate_with_bound(
+    best_bzenergy: &[f64],
+    bztwist: &[f64],
+    delta_twist: f64,
+    current_best: Option<f64>,
+    products: &mut Vec<f64>,
+    logcoef: &mut Vec<f64>,
+    exponents: &mut Vec<f64>,
+) -> Option<f64> {
     delta_linking_logcoef_into(best_bzenergy, products, logcoef);
 
-    linear_search(10.0, 50.0, 0.001, |dl| {
+    if let Some(best_dl) = current_best {
+        // F(dl) = delta_twist - weighted_average_twist(dl) is monotone
+        // decreasing. If F(current best) is still positive, this candidate's
+        // root must be larger than the current best and therefore cannot win.
+        if delta_linking_equation_into(best_dl, logcoef, bztwist, delta_twist, exponents) > 0.0 {
+            return None;
+        }
+    }
+
+    Some(linear_search(10.0, 50.0, 0.001, |dl| {
         delta_linking_equation_into(dl, logcoef, bztwist, delta_twist, exponents)
-    })
+    }))
 }
 
 fn delta_linking_logcoef_into(
