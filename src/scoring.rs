@@ -3,10 +3,13 @@ use crate::constants::{A, EXP_LIMIT, INT_DBZED, K_RT, SIGMA};
 use crate::record::{AntiSynPath, ZScoreOutput, ZScoreRecord};
 use crate::sequence::CircularSequence;
 use crate::ZhuntError;
+use rayon::prelude::*;
+use rayon::ThreadPoolBuilder;
 use rustc_hash::{FxBuildHasher, FxHashMap};
-use std::thread;
+use std::io;
 
 const PROGRESS_BATCH_SIZE: usize = 1_000;
+pub(crate) const SCORE_WORK_BLOCK_POSITIONS: usize = 8_192;
 
 pub fn calculate_zscore<'a>(
     config: &ZhuntConfig,
@@ -24,7 +27,7 @@ pub fn calculate_zscore_with_progress<'a>(
     max_size: usize,
     input_name: String,
     sequence: &'a CircularSequence,
-    progress: impl Fn(usize) + Sync,
+    progress: impl Fn(usize) + Send + Sync,
 ) -> Result<ZScoreOutput<'a>, ZhuntError> {
     calculate_zscore_with_progress_and_threads(
         config, min_size, max_size, input_name, sequence, None, progress,
@@ -38,19 +41,13 @@ pub fn calculate_zscore_with_progress_and_threads<'a>(
     input_name: String,
     sequence: &'a CircularSequence,
     threads: Option<usize>,
-    progress: impl Fn(usize) + Sync,
+    progress: impl Fn(usize) + Send + Sync,
 ) -> Result<ZScoreOutput<'a>, ZhuntError> {
     let range = normalized_dinucleotide_range(config, min_size, max_size)?;
 
-    let records = score_positions_parallel(
-        config,
-        sequence,
-        0,
-        sequence.len(),
-        range,
-        threads,
-        &progress,
-    );
+    let records = install_scoring_pool(threads, || {
+        score_positions_parallel(config, sequence, 0, sequence.len(), range, &progress)
+    })?;
 
     Ok(ZScoreOutput {
         input_name,
@@ -67,8 +64,7 @@ pub(crate) fn score_positions_parallel<'a>(
     start: usize,
     end: usize,
     range: DinucleotideRange,
-    threads: Option<usize>,
-    progress: &(impl Fn(usize) + Sync),
+    progress: &(impl Fn(usize) + Send + Sync),
 ) -> Vec<ZScoreRecord<'a>> {
     debug_assert!(start <= end);
     let positions = end - start;
@@ -76,56 +72,80 @@ pub(crate) fn score_positions_parallel<'a>(
         return Vec::new();
     }
 
-    let workers = threads
-        .filter(|threads| *threads > 0)
-        .unwrap_or_else(|| {
-            thread::available_parallelism()
-                .map(usize::from)
-                .unwrap_or(1)
+    let block_count = positions.div_ceil(SCORE_WORK_BLOCK_POSITIONS);
+    let block_records = (0..block_count)
+        .into_par_iter()
+        .map(|block_index| {
+            let block_start = start + block_index * SCORE_WORK_BLOCK_POSITIONS;
+            let block_end = (block_start + SCORE_WORK_BLOCK_POSITIONS).min(end);
+            score_position_block(config, sequence, block_start, block_end, range, progress)
         })
-        .min(positions);
-    let chunk_size = positions.div_ceil(workers);
+        .collect::<Vec<_>>();
 
-    thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(workers);
-        for chunk_start in (start..end).step_by(chunk_size) {
-            let chunk_end = (chunk_start + chunk_size).min(end);
-            handles.push(scope.spawn(move || {
-                let mut records = Vec::with_capacity(chunk_end - chunk_start);
-                let mut scratch = ScoringScratch::new(range.to);
-                let mut pending_progress = 0;
-                for index in chunk_start..chunk_end {
-                    records.push(score_position_with_scratch(
-                        config,
-                        sequence,
-                        index,
-                        range.from,
-                        range.to,
-                        &mut scratch,
-                    ));
-                    pending_progress += 1;
-                    if pending_progress == PROGRESS_BATCH_SIZE {
-                        progress(pending_progress);
-                        pending_progress = 0;
-                    }
-                }
-                if pending_progress > 0 {
-                    progress(pending_progress);
-                }
-                records
-            }));
-        }
+    let mut records = Vec::with_capacity(positions);
+    for block in block_records {
+        records.extend(block);
+    }
+    records
+}
 
-        let mut records = Vec::with_capacity(positions);
-        for handle in handles {
-            records.extend(
-                handle
-                    .join()
-                    .expect("Z-SCORE scoring worker thread panicked"),
-            );
+pub(crate) fn score_position_block<'a>(
+    config: &ZhuntConfig,
+    sequence: &'a CircularSequence,
+    start: usize,
+    end: usize,
+    range: DinucleotideRange,
+    progress: &(impl Fn(usize) + Send + Sync),
+) -> Vec<ZScoreRecord<'a>> {
+    debug_assert!(start <= end);
+
+    let mut records = Vec::with_capacity(end - start);
+    let mut scratch = ScoringScratch::new(range.to);
+    let mut pending_progress = 0;
+
+    for index in start..end {
+        records.push(score_position_with_scratch(
+            config,
+            sequence,
+            index,
+            range.from,
+            range.to,
+            &mut scratch,
+        ));
+        pending_progress += 1;
+        if pending_progress == PROGRESS_BATCH_SIZE {
+            progress(pending_progress);
+            pending_progress = 0;
         }
-        records
-    })
+    }
+
+    if pending_progress > 0 {
+        progress(pending_progress);
+    }
+
+    records
+}
+
+pub(crate) fn install_scoring_pool<R: Send>(
+    threads: Option<usize>,
+    operation: impl FnOnce() -> R + Send,
+) -> Result<R, ZhuntError> {
+    let threads = threads.filter(|threads| *threads > 0).unwrap_or_else(|| {
+        let cores = std::thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1);
+        if cores >= 8 {
+            cores - 1
+        } else {
+            cores
+        }
+    });
+
+    let pool = ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .map_err(|error| ZhuntError::Io(io::Error::other(error)))?;
+    Ok(pool.install(operation))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
