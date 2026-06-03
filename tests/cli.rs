@@ -164,18 +164,18 @@ fn cli_output_matches_legacy_c_fixture() {
     let output = fs::read_to_string(&output_path).unwrap();
     let expected = format!(
         "{} 12 1 3\n\
-1 7 6  25.133  18.557 2.072370e+01 acgtac   SASASA\n\
-2 8 6  24.578  18.943 3.225294e+01 cgtacg   ASASAS\n\
-3 9 6  25.133  18.557 2.072370e+01 gtacgt   SASASA\n\
-4 10 6  27.130  16.264 5.659386e+00 tacgta   ASASAS\n\
-5 11 6  25.133  18.557 2.072370e+01 acgtac   SASASA\n\
-6 12 6  24.578  18.943 3.225294e+01 cgtacg   ASASAS\n\
-7 13 6  25.133  18.557 2.072370e+01 gtacgt   SASASA\n\
-8 14 6  27.130  16.264 5.659386e+00 tacgta   ASASAS\n\
-9 15 6  25.133  18.557 2.072370e+01 acgtac   SASASA\n\
-10 16 6  24.578  18.943 3.225294e+01 cgtacg   ASASAS\n\
-11 17 6  25.133  18.557 2.072370e+01 gtacgt   SASASA\n\
-12 18 6  27.130  16.264 5.659386e+00 tacgta   ASASAS\n",
+1 7 6  25.120  18.557 2.092778e+01 acgtac   SASASA\n\
+2 8 6  24.565  18.940 3.259786e+01 cgtacg   ASASAS\n\
+3 9 6  25.120  18.557 2.092778e+01 gtacgt   SASASA\n\
+4 10 6  27.115  16.265 5.702482e+00 tacgta   ASASAS\n\
+5 11 6  25.120  18.557 2.092778e+01 acgtac   SASASA\n\
+6 12 6  24.565  18.940 3.259786e+01 cgtacg   ASASAS\n\
+7 13 6  25.120  18.557 2.092778e+01 gtacgt   SASASA\n\
+8 14 6  27.115  16.265 5.702482e+00 tacgta   ASASAS\n\
+9 15 6  25.120  18.557 2.092778e+01 acgtac   SASASA\n\
+10 16 6  24.565  18.940 3.259786e+01 cgtacg   ASASAS\n\
+11 17 6  25.120  18.557 2.092778e+01 gtacgt   SASASA\n\
+12 18 6  27.115  16.265 5.702482e+00 tacgta   ASASAS\n",
         input.display()
     );
     assert_eq!(output, expected);

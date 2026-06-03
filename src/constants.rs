@@ -1,9 +1,12 @@
-const TEMPERATURE_KELVIN: f64 = 298.0;
-const JOULES_PER_KILOCALORIE: f64 = 4_184.0;
+use dimensional_quantity::si::extended::f64::{
+    constants::MOLAR_GAS_CONSTANT, units_of_measure::molar_entropy::KILOCALORIE_PER_KELVIN_MOLE,
+};
 
-/// RT in kcal/mol at the legacy Z-HUNT temperature.
-pub(crate) const RT: f64 =
-    physical_constants::MOLAR_GAS_CONSTANT * TEMPERATURE_KELVIN / JOULES_PER_KILOCALORIE;
+const TEMPERATURE_25_C_KELVIN: f64 = 298.15;
+
+/// RT in kcal/mol at 25 °C, using the CODATA 2022 molar gas constant.
+pub(crate) const RT: f64 = MOLAR_GAS_CONSTANT.get_with_si_unit() * TEMPERATURE_25_C_KELVIN
+    / KILOCALORIE_PER_KELVIN_MOLE.get_with_si_unit();
 pub(crate) const A: f64 = 2. * (1. / 10.5 + 1. / 12.);
 pub(crate) const B: f64 = 0.4;
 pub(crate) const K_RT: f64 = -1100. / 4363.;
