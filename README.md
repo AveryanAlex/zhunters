@@ -16,8 +16,9 @@ Local benchmark (Ryzen 7 5800X) on `NC_043715.1[1..59306649].fa` (59.3 Mbases) w
 
 | Scanner | Real time | User time | System time | CPU |
 | --- | ---: | ---: | ---: | ---: |
-| `zhunters` | `20.568s` | `251.41s` | `5.11s` | `1247%` |
+| `zhunters` | `0:20.57` | `251.41s` | `5.11s` | `1247%` |
 | `fast-zhunt` | `1:36.23` | `710.58s` | `8.53s` | `747%` |
+| `zhunt` | `38:56.40` | `2329.38s` | `6.72s` | `99%` |
 
 ## Changes from the original Z-HUNT
 
