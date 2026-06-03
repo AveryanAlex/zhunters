@@ -37,7 +37,7 @@ target/release/zhunt
 ## Usage
 
 ```bash
-zhunt [--threads <threads>] <windowsize> <minsize> <maxsize> <datafile>
+zhunt [--threads <threads>] [-o <output>] <windowsize> <minsize> <maxsize> <datafile>
 ```
 
 Example:
@@ -52,7 +52,13 @@ Use a fixed number of worker threads:
 target/release/zhunt --threads 8 12 8 12 input.fa
 ```
 
-The output file is written next to the input file as:
+Write results to a custom path:
+
+```bash
+target/release/zhunt -o results.Z-SCORE 12 8 12 input.fa
+```
+
+By default, the output file is written next to the input file as:
 
 ```text
 input.fa.Z-SCORE
@@ -65,6 +71,7 @@ input.fa.Z-SCORE
 - `maxsize`: maximum region size in dinucleotides
 - `datafile`: input DNA file
 - `--threads <threads>`: optional number of Rayon scoring workers; defaults to available parallelism, except systems with 8 or more logical CPUs default to `cores - 1` to leave room for writing/progress work
+- `-o, --output <output>`: optional output `.Z-SCORE` path; defaults to `<datafile>.Z-SCORE`
 
 Input parsing follows the legacy behavior: the scanner reads all `A/T/G/C/N` bases from the file and ignores other bytes.
 

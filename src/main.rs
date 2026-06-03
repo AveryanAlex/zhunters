@@ -1,6 +1,7 @@
 use clap::Parser;
 use indicatif::{HumanCount, HumanDuration, ProgressBar, ProgressStyle};
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -13,11 +14,13 @@ use zhunters::{
 #[command(
     name = "zhunt",
     about = "Scan DNA sequences for Z-DNA-forming regions",
-    override_usage = "zhunt [--threads <threads>] <windowsize> <minsize> <maxsize> <datafile>"
+    override_usage = "zhunt [--threads <threads>] [-o <output>] <windowsize> <minsize> <maxsize> <datafile>"
 )]
 struct Cli {
     #[arg(long, value_name = "threads")]
     threads: Option<NonZeroUsize>,
+    #[arg(short, long, value_name = "output")]
+    output: Option<PathBuf>,
     #[arg(value_name = "windowsize")]
     window_size: usize,
     #[arg(value_name = "minsize")]
@@ -43,7 +46,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
 
     let config = ZhuntConfig::new(cli.window_size)?;
-    let output_path = zscore_output_path(&cli.datafile);
+    let output_path = cli
+        .output
+        .clone()
+        .unwrap_or_else(|| zscore_output_path(&cli.datafile));
 
     print_run_summary(&cli, &output_path);
 
