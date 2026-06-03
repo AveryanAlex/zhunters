@@ -10,6 +10,15 @@ It also incorporates correctness and optimization ideas from Carlos Bederián's 
 
 https://github.com/zzzoom/fast-zhunt
 
+## Benchmark
+
+Local benchmark (Ryzen 7 5800X) on `NC_043715.1[1..59306649].fa` (59.3 Mbases) with `zhunt 12 8 12`:
+
+| Scanner | Real time | User time | System time | CPU |
+| --- | ---: | ---: | ---: | ---: |
+| `zhunters` | `20.568s` | `251.41s` | `5.11s` | `1247%` |
+| `fast-zhunt` | `1:36.23` | `710.58s` | `8.53s` | `747%` |
+
 ## Changes from the original Z-HUNT
 
 The command-line interface, input handling, and `.Z-SCORE` output format are kept compatible with the original scanner. The main changes are grouped by whether they were added in this Rust port or adapted from Fast Z-Hunt.
