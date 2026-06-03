@@ -235,6 +235,7 @@ fn score_position_with_scratch<'a>(
                 products,
                 logcoef,
                 exponents,
+                ratio_coefficients,
                 ..
             } = scratch;
             find_delta_linking_candidate_with_bound(
@@ -242,9 +243,12 @@ fn score_position_with_scratch<'a>(
                 &config.bztwist[..dinucleotides],
                 delta_twist,
                 best_delta_linking,
-                products,
-                logcoef,
-                exponents,
+                &mut DeltaLinkingBuffers {
+                    products,
+                    logcoef,
+                    exponents,
+                    ratio_coefficients,
+                },
             )
         }) else {
             continue;
@@ -311,6 +315,7 @@ struct ScoringScratch {
     products: Vec<f64>,
     logcoef: Vec<f64>,
     exponents: Vec<f64>,
+    ratio_coefficients: Vec<f64>,
 }
 
 impl ScoringScratch {
@@ -322,6 +327,7 @@ impl ScoringScratch {
             products: Vec::with_capacity(max_dinucleotides),
             logcoef: Vec::with_capacity(max_dinucleotides),
             exponents: Vec::with_capacity(max_dinucleotides),
+            ratio_coefficients: Vec::with_capacity(max_dinucleotides),
         }
     }
 }
@@ -527,6 +533,7 @@ pub(crate) fn find_delta_linking(
     let mut products = Vec::new();
     let mut logcoef = Vec::new();
     let mut exponents = Vec::new();
+    let mut ratio_coefficients = Vec::new();
     let delta_linking = find_delta_linking_with_buffers(
         best_bzenergy,
         bztwist,
@@ -534,6 +541,7 @@ pub(crate) fn find_delta_linking(
         &mut products,
         &mut logcoef,
         &mut exponents,
+        &mut ratio_coefficients,
     );
 
     DeltaResult {
@@ -550,17 +558,28 @@ fn find_delta_linking_with_buffers(
     products: &mut Vec<f64>,
     logcoef: &mut Vec<f64>,
     exponents: &mut Vec<f64>,
+    ratio_coefficients: &mut Vec<f64>,
 ) -> f64 {
     find_delta_linking_candidate_with_bound(
         best_bzenergy,
         bztwist,
         delta_twist,
         None,
-        products,
-        logcoef,
-        exponents,
+        &mut DeltaLinkingBuffers {
+            products,
+            logcoef,
+            exponents,
+            ratio_coefficients,
+        },
     )
     .expect("unbounded delta-linking search always returns a candidate")
+}
+
+struct DeltaLinkingBuffers<'a> {
+    products: &'a mut Vec<f64>,
+    logcoef: &'a mut Vec<f64>,
+    exponents: &'a mut Vec<f64>,
+    ratio_coefficients: &'a mut Vec<f64>,
 }
 
 fn find_delta_linking_candidate_with_bound(
@@ -568,26 +587,32 @@ fn find_delta_linking_candidate_with_bound(
     bztwist: &[f64],
     delta_twist: f64,
     current_best: Option<f64>,
-    products: &mut Vec<f64>,
-    logcoef: &mut Vec<f64>,
-    exponents: &mut Vec<f64>,
+    buffers: &mut DeltaLinkingBuffers<'_>,
 ) -> Option<f64> {
-    delta_linking_logcoef_into(best_bzenergy, products, logcoef);
+    delta_linking_logcoef_into(best_bzenergy, buffers.products, buffers.logcoef);
 
     if let Some(best_dl) = current_best {
         // F(dl) = delta_twist - weighted_average_twist(dl) is monotone
         // decreasing. If F(current best) is still positive, this candidate's
         // root must be larger than the current best and therefore cannot win.
-        if delta_linking_equation_into(best_dl, logcoef, bztwist, delta_twist, exponents) > 0.0 {
+        if delta_linking_equation_into(
+            best_dl,
+            buffers.logcoef,
+            bztwist,
+            delta_twist,
+            buffers.exponents,
+        ) > 0.0
+        {
             return None;
         }
     }
 
     Some(delta_linking_search(
-        logcoef,
+        buffers.logcoef,
         bztwist,
         delta_twist,
-        exponents,
+        buffers.exponents,
+        buffers.ratio_coefficients,
     ))
 }
 
@@ -652,6 +677,7 @@ fn delta_linking_search(
     bztwist: &[f64],
     delta_twist: f64,
     exponents: &mut Vec<f64>,
+    ratio_coefficients: &mut Vec<f64>,
 ) -> f64 {
     let f_min =
         delta_linking_equation_into(DELTA_LINKING_MIN, logcoef, bztwist, delta_twist, exponents);
@@ -666,8 +692,16 @@ fn delta_linking_search(
     // the final legacy bisection-grid point with the original equation so the
     // returned delta-linking value stays bit-for-bit compatible with bisection.
     if f_min > 0.0 && f_max < 0.0 {
-        let root_estimate =
-            approximate_delta_linking_root(f_min, f_max, logcoef, bztwist, delta_twist, exponents);
+        delta_linking_ratio_coefficients_into(logcoef, bztwist, ratio_coefficients);
+        let root_estimate = approximate_delta_linking_root(
+            f_min,
+            f_max,
+            ratio_coefficients,
+            logcoef,
+            bztwist,
+            delta_twist,
+            exponents,
+        );
         if let Some(delta_linking) = snap_delta_linking_to_legacy_grid(
             root_estimate,
             logcoef,
@@ -690,6 +724,7 @@ fn delta_linking_search(
 fn approximate_delta_linking_root(
     f_min: f64,
     f_max: f64,
+    ratio_coefficients: &[f64],
     logcoef: &[f64],
     bztwist: &[f64],
     delta_twist: f64,
@@ -703,8 +738,14 @@ fn approximate_delta_linking_root(
     }
 
     for _ in 0..DELTA_LINKING_NEWTON_STEPS {
-        let (value, derivative) =
-            delta_linking_equation_and_derivative_into(x, logcoef, bztwist, delta_twist, exponents);
+        let (value, derivative) = delta_linking_factorized_equation_and_derivative(
+            x,
+            ratio_coefficients,
+            logcoef,
+            bztwist,
+            delta_twist,
+            exponents,
+        );
         if value <= 0.0 {
             upper = x;
         } else {
@@ -776,6 +817,77 @@ fn snap_delta_linking_to_legacy_grid(
 
 fn delta_linking_grid_value(index: usize) -> f64 {
     DELTA_LINKING_MIN + DELTA_LINKING_GRID_STEP * index as f64
+}
+
+fn delta_linking_ratio_coefficients_into(
+    logcoef: &[f64],
+    bztwist: &[f64],
+    ratio_coefficients: &mut Vec<f64>,
+) {
+    ratio_coefficients.clear();
+    ratio_coefficients.extend(
+        logcoef
+            .iter()
+            .zip(bztwist.iter())
+            .map(|(logcoef, twist)| (logcoef + K_RT * twist * twist - SIGMA).exp()),
+    );
+}
+
+fn delta_linking_factorized_equation_and_derivative(
+    dl: f64,
+    ratio_coefficients: &[f64],
+    logcoef: &[f64],
+    bztwist: &[f64],
+    delta_twist: f64,
+    exponents: &mut Vec<f64>,
+) -> (f64, f64) {
+    delta_linking_factorized_equation_and_derivative_inner(
+        dl,
+        ratio_coefficients,
+        bztwist,
+        delta_twist,
+    )
+    .unwrap_or_else(|| {
+        delta_linking_equation_and_derivative_into(dl, logcoef, bztwist, delta_twist, exponents)
+    })
+}
+
+fn delta_linking_factorized_equation_and_derivative_inner(
+    dl: f64,
+    ratio_coefficients: &[f64],
+    bztwist: &[f64],
+    delta_twist: f64,
+) -> Option<(f64, f64)> {
+    let (&first_twist, _) = bztwist.split_first()?;
+    let scale = -2.0 * K_RT * dl;
+    let mut twist_factor = (scale * first_twist).exp();
+    let twist_factor_step = (scale * A).exp();
+    if !twist_factor.is_finite() || !twist_factor_step.is_finite() {
+        return None;
+    }
+
+    let mut sump = 0.0;
+    let mut sumq = 1.0;
+    let mut sum_twist_squared = 0.0;
+
+    for (&coefficient, &twist) in ratio_coefficients.iter().zip(bztwist.iter()) {
+        let weight = coefficient * twist_factor;
+        if !weight.is_finite() {
+            return None;
+        }
+        sumq += weight;
+        sump += twist * weight;
+        sum_twist_squared += twist * twist * weight;
+        twist_factor *= twist_factor_step;
+    }
+
+    if !sumq.is_finite() || sumq <= 0.0 || !sump.is_finite() || !sum_twist_squared.is_finite() {
+        return None;
+    }
+
+    let mean = sump / sumq;
+    let variance = (sum_twist_squared / sumq - mean * mean).max(0.0);
+    Some((delta_twist - mean, 2.0 * K_RT * variance))
 }
 
 fn delta_linking_equation_into(
