@@ -25,7 +25,7 @@ pub use sequence::{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{A, DBZED};
+    use crate::constants::{A, INT_DBZED};
     use crate::output::write_zscore_streaming_with_chunk_size;
     use crate::scoring::{
         assign_bzenergy_indices, best_anti_syn, find_delta_linking, linear_search, score_position,
@@ -86,7 +86,7 @@ mod tests {
         for case in cases {
             let dp = best_anti_syn(&case, &config.exp_dbzed);
             let brute = brute_force_best_anti_syn(&case, &config.exp_dbzed);
-            assert!((dp.esum - brute.esum).abs() < 1e-12, "case {case:?}");
+            assert_eq!(dp.esum, brute.esum, "case {case:?}");
             assert_eq!(dp.antisyn, brute.antisyn, "case {case:?}");
             assert_eq!(dp.bzenergy, brute.bzenergy, "case {case:?}");
         }
@@ -189,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn position_five_case_matches_legacy_c_rounding() {
+    fn position_five_case_uses_corrected_exact_scoring() {
         let config = ZhuntConfig::new(12).unwrap();
         let sequence = parse_sequence_bytes(b"tacattaatcatagcgntgnncag", 24).unwrap();
         let window = sequence.window(0, 24);
@@ -202,14 +202,14 @@ mod tests {
         let record = score_position(&config, &sequence, 0, 8, 12);
         assert_eq!(
             format!("{record}\n"),
-            "1 17 16  34.380   6.498 4.114230e-02 tacattaatcatagcg   ASASASASSASAASAS\n"
+            "1 17 16  34.276   5.830 4.463985e-02 tacattaatcatagcg   ASASASASASASASAS\n"
         );
     }
 
     fn brute_force_best_anti_syn(bzindex: &[usize], exp_dbzed: &[[f64; 17]; 4]) -> BestAntiSyn {
         #[derive(Default)]
         struct BruteBest {
-            esum: f32,
+            esum: i64,
             states: Vec<u8>,
             bzenergy: Vec<f64>,
             initialized: bool,
@@ -221,7 +221,7 @@ mod tests {
             exp_dbzed: &[[f64; 17]; 4],
             states: &mut Vec<u8>,
             bzenergy: &mut Vec<f64>,
-            esum: f32,
+            esum: i64,
             best: &mut BruteBest,
         ) {
             if position == bzindex.len() {
@@ -236,7 +236,7 @@ mod tests {
 
             let previous_state = states.last().copied();
             let as_row = previous_state.map_or(0, |state| transition_row(state, 0));
-            let as_energy = DBZED[as_row][bzindex[position]] as f32;
+            let as_energy = INT_DBZED[as_row][bzindex[position]];
             let as_esum = esum + as_energy;
             states.push(0);
             bzenergy.push(exp_dbzed[as_row][bzindex[position]]);
@@ -252,9 +252,8 @@ mod tests {
             states.pop();
             bzenergy.pop();
 
-            let restored_esum = as_esum - as_energy;
             let sa_row = previous_state.map_or(1, |state| transition_row(state, 1));
-            let sa_esum = (restored_esum as f64 + DBZED[sa_row][bzindex[position]]) as f32;
+            let sa_esum = esum + INT_DBZED[sa_row][bzindex[position]];
             states.push(1);
             bzenergy.push(exp_dbzed[sa_row][bzindex[position]]);
             recurse(
@@ -277,7 +276,7 @@ mod tests {
             exp_dbzed,
             &mut Vec::new(),
             &mut Vec::new(),
-            0.0,
+            0,
             &mut best,
         );
 

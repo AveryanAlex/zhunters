@@ -27,3 +27,21 @@ pub const DBZED: [[f64; 17]; 4] = [
         4.00, 4.26,
     ],
 ];
+
+/// Integer centi-kcal/mol representation of [`DBZED`]. Using exact integer
+/// sums avoids legacy floating-point path-selection artifacts while preserving
+/// the same energy table, including the `N`/unknown column.
+pub(crate) const INT_DBZED: [[i64; 17]; 4] = [
+    [
+        440, 620, 340, 520, 250, 440, 140, 330, 330, 520, 240, 420, 140, 340, 66, 240, 426,
+    ],
+    [
+        440, 250, 330, 140, 620, 440, 520, 340, 340, 140, 240, 66, 520, 330, 420, 240, 426,
+    ],
+    [
+        620, 620, 520, 520, 620, 620, 520, 520, 520, 520, 400, 400, 520, 520, 400, 400, 426,
+    ],
+    [
+        620, 620, 520, 520, 620, 620, 520, 520, 520, 520, 400, 400, 520, 520, 400, 400, 426,
+    ],
+];

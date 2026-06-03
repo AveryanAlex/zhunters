@@ -1,5 +1,5 @@
 use crate::config::ZhuntConfig;
-use crate::constants::{A, DBZED, EXP_LIMIT, K_RT, PI_DEGREES, SIGMA};
+use crate::constants::{A, EXP_LIMIT, INT_DBZED, K_RT, PI_DEGREES, SIGMA};
 use crate::record::{AntiSynPath, ZScoreOutput, ZScoreRecord};
 use crate::sequence::CircularSequence;
 use crate::ZhuntError;
@@ -231,11 +231,27 @@ fn score_position_with_scratch<'a>(
 
     let (best_dinucleotides, best_dl, antisyn) =
         best.expect("from_dinucleotide..=to_dinucleotide is non-empty");
+    let best_path = PathState {
+        esum: 0,
+        mask: antisyn.mask,
+        len: antisyn.dinucleotides,
+    };
+    materialize_bzenergy(
+        best_path,
+        &scratch.bzindex[..best_dinucleotides],
+        &config.exp_dbzed,
+        &mut scratch.bzenergy,
+    );
+    delta_linking_logcoef_into(
+        &scratch.bzenergy,
+        &mut scratch.products,
+        &mut scratch.logcoef,
+    );
     let length = 2 * best_dinucleotides;
     let slope = delta_linking_slope_into(
         best_dl,
         &scratch.logcoef,
-        &config.bztwist[..to_dinucleotide],
+        &config.bztwist[..best_dinucleotides],
         &mut scratch.exponents,
     )
     .atan()
@@ -260,7 +276,7 @@ struct ScoringScratch {
     bzenergy: Vec<f64>,
     states: [Vec<PathState>; 2],
     next: [Vec<PathState>; 2],
-    seen: [FxHashMap<u32, usize>; 2],
+    seen: [FxHashMap<i64, usize>; 2],
     products: Vec<f64>,
     logcoef: Vec<f64>,
     exponents: Vec<f64>,
@@ -331,20 +347,20 @@ fn base_number(base: u8) -> Option<usize> {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg(test)]
 pub(crate) struct BestAntiSyn {
-    pub(crate) esum: f32,
+    pub(crate) esum: i64,
     pub(crate) bzenergy: Vec<f64>,
     pub(crate) antisyn: AntiSynPath,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct PathState {
-    esum: f32,
+    esum: i64,
     mask: u32,
     len: u8,
 }
 
 impl PathState {
-    fn push_with_esum(&self, state: u8, esum: f32) -> Self {
+    fn push_with_esum(&self, state: u8, esum: i64) -> Self {
         Self {
             esum,
             mask: (self.mask << 1) | u32::from(state),
@@ -397,10 +413,8 @@ fn best_anti_syn_prefix_paths_into(max_dinucleotides: usize, scratch: &mut Scori
     );
 
     let first_index = bzindex[0];
-    let first_as_energy = DBZED[0][first_index] as f32;
-    let first_as_esum = 0.0_f32 + first_as_energy;
-    let first_restored = first_as_esum - first_as_energy;
-    let first_sa_esum = (first_restored as f64 + DBZED[1][first_index]) as f32;
+    let first_as_esum = INT_DBZED[0][first_index];
+    let first_sa_esum = INT_DBZED[1][first_index];
     for state in 0..=1 {
         scratch.states[state].clear();
         scratch.next[state].clear();
@@ -431,7 +445,7 @@ fn best_anti_syn_prefix_paths_into(max_dinucleotides: usize, scratch: &mut Scori
         for (previous_state, paths) in scratch.states.iter().enumerate() {
             for path in paths {
                 let as_row = transition_row(previous_state as u8, 0);
-                let as_energy = DBZED[as_row][dinucleotide_index] as f32;
+                let as_energy = INT_DBZED[as_row][dinucleotide_index];
                 let as_esum = path.esum + as_energy;
                 insert_distinct_energy_path(
                     &mut scratch.next[0],
@@ -439,9 +453,8 @@ fn best_anti_syn_prefix_paths_into(max_dinucleotides: usize, scratch: &mut Scori
                     path.push_with_esum(0, as_esum),
                 );
 
-                let restored_esum = as_esum - as_energy;
                 let sa_row = transition_row(previous_state as u8, 1);
-                let sa_esum = (restored_esum as f64 + DBZED[sa_row][dinucleotide_index]) as f32;
+                let sa_esum = path.esum + INT_DBZED[sa_row][dinucleotide_index];
                 insert_distinct_energy_path(
                     &mut scratch.next[1],
                     &mut scratch.seen[1],
@@ -499,23 +512,22 @@ fn materialize_bzenergy(
 
 fn insert_distinct_energy_path(
     paths: &mut Vec<PathState>,
-    seen: &mut FxHashMap<u32, usize>,
+    seen: &mut FxHashMap<i64, usize>,
     candidate: PathState,
 ) {
-    let energy_bits = candidate.esum.to_bits();
-    if let Some(&index) = seen.get(&energy_bits) {
+    if let Some(&index) = seen.get(&candidate.esum) {
         if candidate.mask < paths[index].mask {
             paths[index] = candidate;
         }
     } else {
-        seen.insert(energy_bits, paths.len());
+        seen.insert(candidate.esum, paths.len());
         paths.push(candidate);
     }
 }
 
 fn path_order(left: &PathState, right: &PathState) -> std::cmp::Ordering {
     left.esum
-        .total_cmp(&right.esum)
+        .cmp(&right.esum)
         .then_with(|| left.mask.cmp(&right.mask))
 }
 
@@ -568,6 +580,18 @@ fn find_delta_linking_with_buffers(
     logcoef: &mut Vec<f64>,
     exponents: &mut Vec<f64>,
 ) -> f64 {
+    delta_linking_logcoef_into(best_bzenergy, products, logcoef);
+
+    linear_search(10.0, 50.0, 0.001, |dl| {
+        delta_linking_equation_into(dl, logcoef, bztwist, delta_twist, exponents)
+    })
+}
+
+fn delta_linking_logcoef_into(
+    best_bzenergy: &[f64],
+    products: &mut Vec<f64>,
+    logcoef: &mut Vec<f64>,
+) {
     let dinucleotides = best_bzenergy.len();
     products.clear();
     products.resize(dinucleotides, 1.0);
@@ -582,10 +606,6 @@ fn find_delta_linking_with_buffers(
         }
         logcoef[i] = sum.ln();
     }
-
-    linear_search(10.0, 50.0, 0.001, |dl| {
-        delta_linking_equation_into(dl, logcoef, bztwist, delta_twist, exponents)
-    })
 }
 
 pub(crate) fn linear_search(
