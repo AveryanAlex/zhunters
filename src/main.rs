@@ -1,7 +1,9 @@
 use clap::Parser;
 use indicatif::{HumanCount, HumanDuration, ProgressBar, ProgressStyle};
+use std::fs;
+use std::io;
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -53,9 +55,19 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     print_run_summary(&cli, &output_path);
 
+    let output_matches_input =
+        paths_refer_to_same_existing_file(&output_path, Path::new(&cli.datafile))?;
+    if !output_matches_input {
+        delete_existing_results_file_and_log(&output_path)?;
+    }
+
     let sequence = read_sequence_file(&cli.datafile, 2 * config.max_dinucleotides())?;
 
     println!("✓ Read {} bases", HumanCount(sequence.len() as u64));
+
+    if output_matches_input {
+        delete_existing_results_file_and_log(&output_path)?;
+    }
 
     let progress_units = ((sequence.len() as u64) / 1_000).max(1);
     let completed_positions = AtomicU64::new(0);
@@ -97,7 +109,36 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn print_run_summary(cli: &Cli, output_path: &std::path::Path) {
+fn delete_existing_results_file(output_path: &Path) -> io::Result<bool> {
+    match fs::remove_file(output_path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn delete_existing_results_file_and_log(output_path: &Path) -> io::Result<()> {
+    if delete_existing_results_file(output_path)? {
+        println!("✓ Deleted existing results file {}", output_path.display());
+    }
+    Ok(())
+}
+
+fn paths_refer_to_same_existing_file(left: &Path, right: &Path) -> io::Result<bool> {
+    let left = match fs::canonicalize(left) {
+        Ok(path) => path,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let right = match fs::canonicalize(right) {
+        Ok(path) => path,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    Ok(left == right)
+}
+
+fn print_run_summary(cli: &Cli, output_path: &Path) {
     println!("ZHunters scanner");
     println!("────────────────");
     println!("Input      : {}", cli.datafile);

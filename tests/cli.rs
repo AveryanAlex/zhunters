@@ -182,6 +182,44 @@ fn cli_accepts_output_argument() {
 }
 
 #[test]
+fn cli_deletes_existing_results_file_before_writing() {
+    let dir = temp_dir("delete-existing-output");
+    let input = dir.join("sample.txt");
+    let output_path = dir.join("custom.Z-SCORE");
+    fs::write(&input, b"ACGTACGT\n").unwrap();
+    fs::write(&output_path, b"stale results that should be deleted\n").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_zhunt"))
+        .arg("--output")
+        .arg(output_path.as_os_str())
+        .arg("4")
+        .arg("1")
+        .arg("3")
+        .arg(input.as_os_str())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains(&format!(
+            "✓ Deleted existing results file {}",
+            output_path.display()
+        )),
+        "{stdout}"
+    );
+
+    let output = fs::read_to_string(&output_path).unwrap();
+    assert!(!output.contains("stale results"));
+    assert_eq!(
+        output.lines().next().unwrap(),
+        format!("{} 8 1 3", input.display())
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn cli_output_matches_legacy_c_fixture() {
     let dir = temp_dir("legacy-fixture");
     let input = dir.join("sample.txt");
