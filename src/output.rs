@@ -15,9 +15,10 @@ use std::sync::mpsc;
 
 const WRITER_BUFFERED_CHUNKS: usize = 2;
 
-struct ScoredBlock<'a> {
+struct ScoredBlock {
     index: usize,
-    records: Vec<ZScoreRecord<'a>>,
+    bytes: Vec<u8>,
+    positions: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -212,13 +213,13 @@ fn write_score_blocks_streaming<W: Write + Send>(
     let max_in_flight = (WRITER_BUFFERED_CHUNKS * rayon::current_num_threads())
         .max(1)
         .min(block_count);
-    let (sender, receiver) = mpsc::sync_channel::<ScoredBlock<'_>>(max_in_flight);
+    let (sender, receiver) = mpsc::sync_channel::<ScoredBlock>(max_in_flight);
 
     let writer_result = rayon::scope(move |scope| -> io::Result<()> {
         let mut next_to_schedule = 0;
         let mut completed = 0;
         let mut next_to_write = 0;
-        let mut buffered = BTreeMap::<usize, Vec<ZScoreRecord>>::new();
+        let mut buffered = BTreeMap::<usize, ScoredBlock>::new();
         let mut positions_since_flush = 0;
         let mut writer_result = Ok(());
 
@@ -235,27 +236,29 @@ fn write_score_blocks_streaming<W: Write + Send>(
             next_to_schedule += 1;
         }
         while completed < block_count {
-            let Ok(block) = receiver.recv() else {
-                break;
+            let block = match receiver.recv() {
+                Ok(block) => block,
+                Err(_) => {
+                    writer_result = Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "scoring worker disconnected before all blocks were written",
+                    ));
+                    break;
+                }
             };
             completed += 1;
 
             if writer_result.is_ok() {
-                buffered.insert(block.index, block.records);
+                buffered.insert(block.index, block);
                 debug_assert!(buffered.len() <= max_in_flight);
 
-                while let Some(records) = buffered.remove(&next_to_write) {
-                    for record in records {
-                        if let Err(error) = writeln!(writer, "{record}") {
-                            writer_result = Err(error);
-                            break;
-                        }
-                    }
-                    if writer_result.is_err() {
+                while let Some(block) = buffered.remove(&next_to_write) {
+                    if let Err(error) = writer.write_all(&block.bytes) {
+                        writer_result = Err(error);
                         break;
                     }
 
-                    positions_since_flush += block_len(next_to_write, block_size, positions);
+                    positions_since_flush += block.positions;
                     next_to_write += 1;
                     if positions_since_flush >= flush_positions || next_to_write == block_count {
                         if let Err(error) = writer.flush() {
@@ -300,22 +303,10 @@ fn write_score_blocks_sequential<W: Write + Send>(
     let mut positions_since_flush = 0;
 
     for block_index in 0..block_count {
-        let block_start = block_index * block_size;
-        let block_end = (block_start + block_size).min(positions);
-        let records = score_position_block(
-            config,
-            plan.sequence,
-            block_start,
-            block_end,
-            plan.range,
-            progress,
-        );
+        let block = score_and_format_block(config, plan, block_size, block_index, progress);
+        writer.write_all(&block.bytes)?;
 
-        for record in records {
-            writeln!(writer, "{record}")?;
-        }
-
-        positions_since_flush += block_len(block_index, block_size, positions);
+        positions_since_flush += block.positions;
         if positions_since_flush >= flush_positions || block_index + 1 == block_count {
             writer.flush()?;
             positions_since_flush = 0;
@@ -327,7 +318,7 @@ fn write_score_blocks_sequential<W: Write + Send>(
 
 fn spawn_score_block<'scope, 'a: 'scope>(
     scope: &rayon::Scope<'scope>,
-    sender: mpsc::SyncSender<ScoredBlock<'a>>,
+    sender: mpsc::SyncSender<ScoredBlock>,
     config: &'scope ZhuntConfig,
     plan: StreamingPlan<'a>,
     block_size: usize,
@@ -335,26 +326,44 @@ fn spawn_score_block<'scope, 'a: 'scope>(
     progress: &'scope (impl Fn(usize) + Send + Sync),
 ) {
     scope.spawn(move |_| {
-        let block_start = block_index * block_size;
-        let block_end = (block_start + block_size).min(plan.sequence.len());
-        let records = score_position_block(
-            config,
-            plan.sequence,
-            block_start,
-            block_end,
-            plan.range,
-            progress,
-        );
-        let _ = sender.send(ScoredBlock {
-            index: block_index,
-            records,
-        });
+        let block = score_and_format_block(config, plan, block_size, block_index, progress);
+        let _ = sender.send(block);
     });
 }
 
-fn block_len(block_index: usize, block_size: usize, positions: usize) -> usize {
+fn score_and_format_block(
+    config: &ZhuntConfig,
+    plan: StreamingPlan<'_>,
+    block_size: usize,
+    block_index: usize,
+    progress: &(impl Fn(usize) + Send + Sync),
+) -> ScoredBlock {
     let block_start = block_index * block_size;
-    (positions - block_start).min(block_size)
+    let block_end = (block_start + block_size).min(plan.sequence.len());
+    let records = score_position_block(
+        config,
+        plan.sequence,
+        block_start,
+        block_end,
+        plan.range,
+        progress,
+    );
+    let positions = block_end - block_start;
+    let bytes = format_records(records);
+
+    ScoredBlock {
+        index: block_index,
+        bytes,
+        positions,
+    }
+}
+
+fn format_records(records: Vec<ZScoreRecord<'_>>) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(records.len() * 96);
+    for record in records {
+        writeln!(&mut bytes, "{record}").expect("writing formatted records to a Vec cannot fail");
+    }
+    bytes
 }
 
 pub(crate) fn write_zscore_header<W: Write + ?Sized>(
