@@ -361,9 +361,166 @@ fn score_and_format_block(
 fn format_records(records: Vec<ZScoreRecord<'_>>) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(records.len() * 96);
     for record in records {
-        writeln!(&mut bytes, "{record}").expect("writing formatted records to a Vec cannot fail");
+        format_record(&record, &mut bytes);
     }
     bytes
+}
+
+fn format_record(record: &ZScoreRecord<'_>, bytes: &mut Vec<u8>) {
+    push_usize(bytes, record.start);
+    bytes.push(b' ');
+    push_usize(bytes, record.start + record.length);
+    bytes.push(b' ');
+    push_usize(bytes, record.length);
+    bytes.push(b' ');
+    push_fixed_3_width_7(bytes, record.delta_linking);
+    bytes.push(b' ');
+    push_fixed_3_width_7(bytes, record.slope);
+    bytes.push(b' ');
+    push_scientific(bytes, record.probability);
+    bytes.push(b' ');
+    bytes.extend_from_slice(record.sequence.as_ref());
+    bytes.extend_from_slice(b"   ");
+    push_antisyn(bytes, record.antisyn.mask, record.antisyn.dinucleotides);
+    bytes.push(b'\n');
+}
+
+fn push_usize(bytes: &mut Vec<u8>, value: usize) {
+    push_u64(bytes, value as u64);
+}
+
+fn push_u64(bytes: &mut Vec<u8>, mut value: u64) {
+    let mut buffer = [0_u8; 20];
+    let mut index = buffer.len();
+    loop {
+        index -= 1;
+        buffer[index] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    bytes.extend_from_slice(&buffer[index..]);
+}
+
+fn push_i32_zero_padded_2(bytes: &mut Vec<u8>, value: i32) {
+    let magnitude = value.unsigned_abs();
+    bytes.push(if value < 0 { b'-' } else { b'+' });
+    if magnitude < 10 {
+        bytes.push(b'0');
+        bytes.push(b'0' + magnitude as u8);
+    } else {
+        push_u64(bytes, magnitude as u64);
+    }
+}
+
+fn push_fixed_3_width_7(bytes: &mut Vec<u8>, value: f64) {
+    let mut buffer = [0_u8; 32];
+    let mut len = 0;
+
+    let negative = value.is_sign_negative();
+    let scaled = round_ties_even_to_u64(value.abs() * 1_000.0);
+    if negative {
+        buffer[len] = b'-';
+        len += 1;
+    }
+
+    len += write_u64_to_buffer(&mut buffer[len..], scaled / 1_000);
+    buffer[len] = b'.';
+    len += 1;
+    let fraction = scaled % 1_000;
+    buffer[len] = b'0' + (fraction / 100) as u8;
+    buffer[len + 1] = b'0' + ((fraction / 10) % 10) as u8;
+    buffer[len + 2] = b'0' + (fraction % 10) as u8;
+    len += 3;
+
+    for _ in len..7 {
+        bytes.push(b' ');
+    }
+    bytes.extend_from_slice(&buffer[..len]);
+}
+
+fn push_fixed_6(bytes: &mut Vec<u8>, value: f64) {
+    let scaled = round_ties_even_to_u64(value * 1_000_000.0);
+    push_u64(bytes, scaled / 1_000_000);
+    bytes.push(b'.');
+    let fraction = scaled % 1_000_000;
+    bytes.push(b'0' + (fraction / 100_000) as u8);
+    bytes.push(b'0' + ((fraction / 10_000) % 10) as u8);
+    bytes.push(b'0' + ((fraction / 1_000) % 10) as u8);
+    bytes.push(b'0' + ((fraction / 100) % 10) as u8);
+    bytes.push(b'0' + ((fraction / 10) % 10) as u8);
+    bytes.push(b'0' + (fraction % 10) as u8);
+}
+
+fn push_scientific(bytes: &mut Vec<u8>, value: f64) {
+    if value == 0.0 {
+        bytes.extend_from_slice(b"0.000000e+00");
+        return;
+    }
+
+    if !value.is_finite() {
+        write!(bytes, "{value:.6e}").expect("writing formatted records to a Vec cannot fail");
+        return;
+    }
+
+    if value.is_sign_negative() {
+        bytes.push(b'-');
+    }
+    let value = value.abs();
+    let mut exponent = value.log10().floor() as i32;
+    let mut mantissa = value / 10_f64.powi(exponent);
+
+    if (mantissa * 1_000_000.0).round() >= 10_000_000.0 {
+        mantissa /= 10.0;
+        exponent += 1;
+    }
+
+    push_fixed_6(bytes, mantissa);
+    bytes.push(b'e');
+    push_i32_zero_padded_2(bytes, exponent);
+}
+
+fn push_antisyn(bytes: &mut Vec<u8>, mask: u32, dinucleotides: u8) {
+    let dinucleotides = usize::from(dinucleotides);
+    for position in 0..dinucleotides {
+        let shift = dinucleotides - 1 - position;
+        if (mask >> shift) & 1 == 0 {
+            bytes.extend_from_slice(b"AS");
+        } else {
+            bytes.extend_from_slice(b"SA");
+        }
+    }
+}
+
+fn round_ties_even_to_u64(value: f64) -> u64 {
+    let floor = value.floor();
+    let fraction = value - floor;
+    const TIE_EPSILON: f64 = 1.0e-9;
+    let rounded = if fraction > 0.5 + TIE_EPSILON {
+        floor + 1.0
+    } else if fraction < 0.5 - TIE_EPSILON || (floor as u64).is_multiple_of(2) {
+        floor
+    } else {
+        floor + 1.0
+    };
+    rounded as u64
+}
+
+fn write_u64_to_buffer(buffer: &mut [u8], mut value: u64) -> usize {
+    let mut digits = [0_u8; 20];
+    let mut index = digits.len();
+    loop {
+        index -= 1;
+        digits[index] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    let len = digits.len() - index;
+    buffer[..len].copy_from_slice(&digits[index..]);
+    len
 }
 
 pub(crate) fn write_zscore_header<W: Write + ?Sized>(

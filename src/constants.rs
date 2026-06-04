@@ -4,7 +4,6 @@ pub(crate) const A: f64 = 2. * (1. / 10.5 + 1. / 12.);
 pub(crate) const B: f64 = 0.4;
 pub(crate) const K_RT: f64 = -1100. / 4363.;
 pub(crate) const SIGMA: f64 = 10. / RT;
-pub(crate) const EXP_LIMIT: f64 = -600.0;
 pub(crate) const STREAM_CHUNK_POSITIONS: usize = 256 * 1024;
 
 /// Delta BZ Energy of dinucleotide, indexed by anti/syn transition row and
